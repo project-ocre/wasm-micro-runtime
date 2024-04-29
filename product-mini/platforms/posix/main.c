@@ -449,6 +449,9 @@ static char global_heap_buf[WASM_GLOBAL_HEAP_SIZE] = { 0 };
 #else
 static void *
 malloc_func(
+#if WASM_MEM_ALLOC_WITH_USAGE != 0
+    mem_alloc_usage_t usage,
+#endif
 #if WASM_MEM_ALLOC_WITH_USER_DATA != 0
     void *user_data,
 #endif
@@ -459,6 +462,9 @@ malloc_func(
 
 static void *
 realloc_func(
+#if WASM_MEM_ALLOC_WITH_USAGE != 0
+    mem_alloc_usage_t usage, bool full_size_mmaped,
+#endif
 #if WASM_MEM_ALLOC_WITH_USER_DATA != 0
     void *user_data,
 #endif
@@ -469,6 +475,9 @@ realloc_func(
 
 static void
 free_func(
+#if WASM_MEM_ALLOC_WITH_USAGE != 0
+    mem_alloc_usage_t usage,
+#endif
 #if WASM_MEM_ALLOC_WITH_USER_DATA != 0
     void *user_data,
 #endif
@@ -682,7 +691,7 @@ main(int argc, char *argv[])
 #endif
 #if WASM_ENABLE_GC != 0
         else if (!strncmp(argv[0], "--gc-heap-size=", 15)) {
-            if (argv[0][21] == '\0')
+            if (argv[0][15] == '\0')
                 return print_help();
             gc_heap_size = atoi(argv[0] + 15);
         }
@@ -870,7 +879,8 @@ main(int argc, char *argv[])
 #if WASM_ENABLE_DEBUG_INTERP != 0
     init_args.instance_port = instance_port;
     if (ip_addr)
-        strcpy(init_args.ip_addr, ip_addr);
+        /* ensure that init_args.ip_addr is null terminated */
+        strncpy(init_args.ip_addr, ip_addr, sizeof(init_args.ip_addr) - 1);
 #endif
 
 #if WASM_ENABLE_DYNAMIC_PGO != 0

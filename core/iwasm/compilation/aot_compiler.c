@@ -333,7 +333,7 @@ aot_gen_commit_values(AOTCompFrame *frame)
         if (!p->dirty)
             continue;
 
-        n = p - frame->lp;
+        n = (uint32)(p - frame->lp);
 
         /* Commit reference flag */
         if (comp_ctx->enable_gc) {
@@ -435,7 +435,7 @@ aot_gen_commit_values(AOTCompFrame *frame)
             continue;
 
         p->dirty = 0;
-        n = p - frame->lp;
+        n = (uint32)(p - frame->lp);
 
         /* Commit values */
         switch (p->type) {
@@ -541,7 +541,7 @@ aot_gen_commit_values(AOTCompFrame *frame)
         /* Clear reference flags for unused stack slots.  */
         for (p = frame->sp; p < end; p++) {
             bh_assert(!p->ref);
-            n = p - frame->lp;
+            n = (uint32)(p - frame->lp);
 
             /* Commit reference flag.  */
             if (p->ref != p->committed_ref - 1) {
@@ -624,7 +624,7 @@ aot_gen_commit_sp_ip(AOTCompFrame *frame, bool commit_sp, bool commit_ip)
     }
 
     if (commit_sp) {
-        n = sp - frame->lp;
+        n = (uint32)(sp - frame->lp);
         value = I32_CONST(offset_of_local(comp_ctx, n));
         if (!value) {
             aot_set_last_error("llvm build const failed");
@@ -969,7 +969,9 @@ aot_compile_func(AOTCompContext *comp_ctx, uint32 func_index)
         location = dwarf_gen_location(
             comp_ctx, func_ctx,
             (frame_ip - 1) - comp_ctx->comp_data->wasm_module->buf_code);
-        LLVMSetCurrentDebugLocation2(comp_ctx->builder, location);
+        if (location != NULL) {
+            LLVMSetCurrentDebugLocation2(comp_ctx->builder, location);
+        }
 #endif
 
 #if WASM_ENABLE_DYNAMIC_PGO != 0
@@ -3487,16 +3489,6 @@ aot_compile_func(AOTCompContext *comp_ctx, uint32 func_index)
                         break;
                     }
 
-                    case SIMD_i32x4_narrow_i64x2_s:
-                    case SIMD_i32x4_narrow_i64x2_u:
-                    {
-                        if (!aot_compile_simd_i32x4_narrow_i64x2(
-                                comp_ctx, func_ctx,
-                                SIMD_i32x4_narrow_i64x2_s == opcode))
-                            return false;
-                        break;
-                    }
-
                     case SIMD_i32x4_extend_low_i16x8_s:
                     case SIMD_i32x4_extend_high_i16x8_s:
                     {
@@ -3536,30 +3528,10 @@ aot_compile_func(AOTCompContext *comp_ctx, uint32 func_index)
                         break;
                     }
 
-                    case SIMD_i32x4_add_sat_s:
-                    case SIMD_i32x4_add_sat_u:
-                    {
-                        if (!aot_compile_simd_i32x4_saturate(
-                                comp_ctx, func_ctx, V128_ADD,
-                                opcode == SIMD_i32x4_add_sat_s))
-                            return false;
-                        break;
-                    }
-
                     case SIMD_i32x4_sub:
                     {
                         if (!aot_compile_simd_i32x4_arith(comp_ctx, func_ctx,
                                                           V128_SUB))
-                            return false;
-                        break;
-                    }
-
-                    case SIMD_i32x4_sub_sat_s:
-                    case SIMD_i32x4_sub_sat_u:
-                    {
-                        if (!aot_compile_simd_i32x4_saturate(
-                                comp_ctx, func_ctx, V128_SUB,
-                                opcode == SIMD_i32x4_add_sat_s))
                             return false;
                         break;
                     }
@@ -3596,13 +3568,6 @@ aot_compile_func(AOTCompContext *comp_ctx, uint32 func_index)
                     {
                         if (!aot_compile_simd_i32x4_dot_i16x8(comp_ctx,
                                                               func_ctx))
-                            return false;
-                        break;
-                    }
-
-                    case SIMD_i32x4_avgr_u:
-                    {
-                        if (!aot_compile_simd_i32x4_avgr_u(comp_ctx, func_ctx))
                             return false;
                         break;
                     }
@@ -3763,13 +3728,6 @@ aot_compile_func(AOTCompContext *comp_ctx, uint32 func_index)
                         break;
                     }
 
-                    case SIMD_f32x4_round:
-                    {
-                        if (!aot_compile_simd_f32x4_round(comp_ctx, func_ctx))
-                            return false;
-                        break;
-                    }
-
                     case SIMD_f32x4_sqrt:
                     {
                         if (!aot_compile_simd_f32x4_sqrt(comp_ctx, func_ctx))
@@ -3819,13 +3777,6 @@ aot_compile_func(AOTCompContext *comp_ctx, uint32 func_index)
                     case SIMD_f64x2_neg:
                     {
                         if (!aot_compile_simd_f64x2_neg(comp_ctx, func_ctx))
-                            return false;
-                        break;
-                    }
-
-                    case SIMD_f64x2_round:
-                    {
-                        if (!aot_compile_simd_f64x2_round(comp_ctx, func_ctx))
                             return false;
                         break;
                     }

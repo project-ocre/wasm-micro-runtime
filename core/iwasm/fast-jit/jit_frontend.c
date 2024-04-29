@@ -204,12 +204,15 @@ JitReg
 get_aux_stack_bound_reg(JitFrame *frame)
 {
     JitCompContext *cc = frame->cc;
+    JitReg tmp = jit_cc_new_reg_I32(cc);
 
     if (!frame->aux_stack_bound_reg) {
         frame->aux_stack_bound_reg = cc->aux_stack_bound_reg;
-        GEN_INSN(
-            LDI32, frame->aux_stack_bound_reg, cc->exec_env_reg,
-            NEW_CONST(I32, offsetof(WASMExecEnv, aux_stack_boundary.boundary)));
+        GEN_INSN(LDPTR, frame->aux_stack_bound_reg, cc->exec_env_reg,
+                 NEW_CONST(I32, offsetof(WASMExecEnv, aux_stack_boundary)));
+        /* TODO: Memory64 whether to convert depends on memory idx type */
+        GEN_INSN(I64TOI32, tmp, frame->aux_stack_bound_reg);
+        frame->aux_stack_bound_reg = tmp;
     }
     return frame->aux_stack_bound_reg;
 }
@@ -218,12 +221,15 @@ JitReg
 get_aux_stack_bottom_reg(JitFrame *frame)
 {
     JitCompContext *cc = frame->cc;
+    JitReg tmp = jit_cc_new_reg_I32(cc);
 
     if (!frame->aux_stack_bottom_reg) {
         frame->aux_stack_bottom_reg = cc->aux_stack_bottom_reg;
-        GEN_INSN(
-            LDI32, frame->aux_stack_bottom_reg, cc->exec_env_reg,
-            NEW_CONST(I32, offsetof(WASMExecEnv, aux_stack_bottom.bottom)));
+        GEN_INSN(LDPTR, frame->aux_stack_bottom_reg, cc->exec_env_reg,
+                 NEW_CONST(I32, offsetof(WASMExecEnv, aux_stack_bottom)));
+        /* TODO: Memory64 whether to convert depends on memory idx type */
+        GEN_INSN(I64TOI32, tmp, frame->aux_stack_bottom_reg);
+        frame->aux_stack_bottom_reg = tmp;
     }
     return frame->aux_stack_bottom_reg;
 }
@@ -338,7 +344,8 @@ JitReg
 get_memory_data_reg(JitFrame *frame, uint32 mem_idx)
 {
     JitCompContext *cc = frame->cc;
-    JitReg module_inst_reg, insn;
+    JitReg module_inst_reg;
+    JitInsn *insn;
     uint32 memory_data_offset;
 #if WASM_ENABLE_SHARED_MEMORY != 0
     JitReg memory_inst_reg;
@@ -1067,8 +1074,8 @@ create_fixed_virtual_regs(JitCompContext *cc)
     cc->import_func_ptrs_reg = jit_cc_new_reg_ptr(cc);
     cc->fast_jit_func_ptrs_reg = jit_cc_new_reg_ptr(cc);
     cc->func_type_indexes_reg = jit_cc_new_reg_ptr(cc);
-    cc->aux_stack_bound_reg = jit_cc_new_reg_I32(cc);
-    cc->aux_stack_bottom_reg = jit_cc_new_reg_I32(cc);
+    cc->aux_stack_bound_reg = jit_cc_new_reg_ptr(cc);
+    cc->aux_stack_bottom_reg = jit_cc_new_reg_ptr(cc);
 #if WASM_ENABLE_DYNAMIC_PGO != 0
     cc->ent_and_br_cnts_reg = jit_cc_new_reg_ptr(cc);
 #endif
