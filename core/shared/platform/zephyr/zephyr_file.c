@@ -15,6 +15,10 @@
 #include <zephyr/fs/fs_sys.h>
 #include <zephyr/fs/littlefs.h>
 
+#include <zephyr/net/socket.h>
+#include <zephyr/posix/fcntl.h>   // F_GETFL, F_SETFL, O_NONBLOCK
+// #include <zephyr/net/socket_select.h>
+
 /* Notes:
  * This is the implementation of a POSIX-like file system interface for Zephyr.
  * To manage our file descriptors, we created a struct `zephyr_fs_desc` that
@@ -273,6 +277,16 @@ os_file_get_fdflags(os_file_handle handle, __wasi_fdflags_t *flags)
 {
     struct zephyr_fs_desc *ptr = NULL;
 
+    /* Sockets: reflect current non-blocking state */
+    if (handle->is_sock) {
+        int cur = zsock_fcntl(handle->fd, F_GETFL, 0);
+        if (cur < 0)
+            return convert_errno(errno);
+        if (cur & O_NONBLOCK)
+            *flags |= __WASI_FDFLAG_NONBLOCK;
+        return __WASI_ESUCCESS;
+    }
+
     if (os_is_virtual_fd(handle->fd)) {
         *flags = 0;
         return __WASI_ESUCCESS;
@@ -283,31 +297,38 @@ os_file_get_fdflags(os_file_handle handle, __wasi_fdflags_t *flags)
     if ((ptr->file.flags & FS_O_APPEND) != 0) {
         *flags |= __WASI_FDFLAG_APPEND;
     }
-    /* Others flags:
-     *     - __WASI_FDFLAG_DSYNC
-     *     - __WASI_FDFLAG_RSYNC
-     *     - __WASI_FDFLAG_SYNC
-     *     - __WASI_FDFLAG_NONBLOCK
-     * Have no equivalent in Zephyr.
-     */
+
     return __WASI_ESUCCESS;
 }
 
 __wasi_errno_t
 os_file_set_fdflags(os_file_handle handle, __wasi_fdflags_t flags)
 {
-    if (os_is_virtual_fd(handle->fd)) {
+    /* Sockets: set/clear O_NONBLOCK */
+    if (handle->is_sock) {
+        int cur = zsock_fcntl(handle->fd, F_GETFL, 0);
+        if (cur < 0)
+            return convert_errno(errno);
+
+        bool want_nb = (flags & __WASI_FDFLAG_NONBLOCK) != 0;
+        int newf = want_nb ? (cur | O_NONBLOCK) : (cur & ~O_NONBLOCK);
+
+        if (zsock_fcntl(handle->fd, F_SETFL, newf) < 0) {
+            return convert_errno(errno);
+        }
         return __WASI_ESUCCESS;
     }
 
+    /* Virtual stdio */
+    if (os_is_virtual_fd(handle->fd))
+        return __WASI_ESUCCESS;
+
+    /* Regular files: keep existing behavior */
     struct zephyr_fs_desc *ptr = NULL;
-
     GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
-
-    if ((flags & __WASI_FDFLAG_APPEND) != 0) {
+    if ((flags & __WASI_FDFLAG_APPEND) != 0)
         ptr->file.flags |= FS_O_APPEND;
-    }
-    /* Same as above */
+
     return __WASI_ESUCCESS;
 }
 
