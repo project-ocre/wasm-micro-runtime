@@ -442,7 +442,16 @@ os_socket_addr_resolve(const char *host, const char *service,
         }
     }
 
-    ret = zsock_getaddrinfo(host, strlen(service) == 0 ? NULL : service,
+    char *_host;
+    if (!strcmp(host, "localhost")) {
+        printk("os_socket_addr_resolve called with host=\"localhost\" - "
+               "substituting 127.0.0.1\n");
+        _host = "127.0.0.1";
+    } else {
+        _host = (char *)host;
+    }
+
+    ret = zsock_getaddrinfo(_host, strlen(service) == 0 ? NULL : service,
                             hints_enabled ? &hints : NULL, &result);
     if (ret != BHT_OK) {
         errno = getaddrinfo_error_to_errno(ret);
