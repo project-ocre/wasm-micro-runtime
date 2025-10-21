@@ -900,18 +900,61 @@ os_socket_get_tcp_fastopen_connect(bh_socket_t socket, bool *is_enabled)
 int
 os_socket_set_ip_multicast_loop(bh_socket_t socket, bool ipv6, bool is_enabled)
 {
-    errno = ENOSYS;
+    int opt = is_enabled ? 1 : 0;
+    int ret;
 
-    return BHT_ERROR;
+#ifdef IPPROTO_IPV6
+    if (ipv6) {
+        ret = zsock_setsockopt(socket->fd, IPPROTO_IPV6,
+                               IPV6_MULTICAST_LOOP, &opt, sizeof(opt));
+    } else
+#endif
+    {
+        ret = zsock_setsockopt(socket->fd, IPPROTO_IP,
+                               IP_MULTICAST_LOOP, &opt, sizeof(opt));
+    }
+
+    if (ret != 0) {
+        /* Best-effort: some stacks don’t support this; don’t hard-fail */
+        if (errno == ENOPROTOOPT || errno == ENOSYS) {
+            return BHT_OK;
+        }
+        return BHT_ERROR;
+    }
+    return BHT_OK;
 }
 
 int
 os_socket_get_ip_multicast_loop(bh_socket_t socket, bool ipv6, bool *is_enabled)
 {
-    errno = ENOSYS;
+    int opt = 0;
+    socklen_t len = sizeof(opt);
+    int ret;
 
-    return BHT_ERROR;
+#ifdef IPPROTO_IPV6
+    if (ipv6) {
+        ret = zsock_getsockopt(socket->fd, IPPROTO_IPV6,
+                               IPV6_MULTICAST_LOOP, &opt, &len);
+    } else
+#endif
+    {
+        ret = zsock_getsockopt(socket->fd, IPPROTO_IP,
+                               IP_MULTICAST_LOOP, &opt, &len);
+    }
+
+    if (ret != 0) {
+        if (errno == ENOPROTOOPT || errno == ENOSYS) {
+            /* Report “disabled” if the stack doesn’t expose the knob */
+            *is_enabled = false;
+            return BHT_OK;
+        }
+        return BHT_ERROR;
+    }
+
+    *is_enabled = (opt != 0);
+    return BHT_OK;
 }
+
 
 int
 os_socket_set_ip_add_membership(bh_socket_t socket,
@@ -920,34 +963,37 @@ os_socket_set_ip_add_membership(bh_socket_t socket,
 {
     assert(imr_multiaddr);
 
+    int ret = -1;
+
+#ifdef IPPROTO_IPV6
     if (is_ipv6) {
-#if defined(IPPROTO_IPV6) && !defined(BH_PLATFORM_COSMOPOLITAN)
-        struct ipv6_mreq mreq;
+        struct ipv6_mreq mreq6 = {0};
+        memcpy(&mreq6.ipv6mr_multiaddr,
+               &imr_multiaddr->ipv6[0], sizeof(mreq6.ipv6mr_multiaddr));
+        mreq6.ipv6mr_interface = imr_interface; /* 0 ⇒ first suitable iface */
 
-        for (int i = 0; i < 8; i++) {
-            ((uint16_t *)mreq.ipv6mr_multiaddr.s6_addr)[i] =
-                imr_multiaddr->ipv6[i];
-        }
-        mreq.ipv6mr_interface = imr_interface;
-
-        if (zsock_setsockopt(socket->fd, IPPROTO_IPV6, IPV6_ADD_MEMBERSHIP, &mreq,
-                       sizeof(mreq))
-            != 0) {
-            return BHT_ERROR;
-        }
-#else
-        errno = EAFNOSUPPORT;
-        return BHT_ERROR;
+        ret = zsock_setsockopt(socket->fd, IPPROTO_IPV6,
+                               IPV6_ADD_MEMBERSHIP, &mreq6, sizeof(mreq6));
+    } else
 #endif
-    }
-    else {
-        struct ip_mreqn mreq;
+    {
+        struct ip_mreqn mreq = {0};
         mreq.imr_multiaddr.s_addr = imr_multiaddr->ipv4;
-        mreq.imr_address.s_addr = imr_interface;
+        mreq.imr_address.s_addr   = imr_interface;  /* 0 ⇒ first suitable iface */
+        /* mreq.imr_ifindex is optional; leave 0 unless you have an index */
 
-        if (zsock_setsockopt(socket->fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq,
-                             sizeof(mreq))
-            != 0) {
+        ret = zsock_setsockopt(socket->fd, IPPROTO_IP,
+                               IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq));
+    }
+
+    if (ret != 0) {
+        switch (errno) {
+        case EALREADY:      /* already joined: OK */
+        case EADDRINUSE:    /* duplicate membership: OK */
+        case ENOPROTOOPT:   /* option not supported: treat as soft-OK */
+        case ENOSYS:        /* not implemented: soft-OK */
+            return BHT_OK;
+        default:
             return BHT_ERROR;
         }
     }
@@ -961,34 +1007,36 @@ os_socket_set_ip_drop_membership(bh_socket_t socket,
 {
     assert(imr_multiaddr);
 
+    int ret = -1;
+
+#ifdef IPPROTO_IPV6
     if (is_ipv6) {
-#if defined(IPPROTO_IPV6) && !defined(BH_PLATFORM_COSMOPOLITAN)
-        struct ipv6_mreq mreq;
+        struct ipv6_mreq mreq6 = {0};
+        memcpy(&mreq6.ipv6mr_multiaddr,
+               &imr_multiaddr->ipv6[0], sizeof(mreq6.ipv6mr_multiaddr));
+        mreq6.ipv6mr_interface = imr_interface;
 
-        for (int i = 0; i < 8; i++) {
-            ((uint16_t *)mreq.ipv6mr_multiaddr.s6_addr)[i] =
-                imr_multiaddr->ipv6[i];
-        }
-        mreq.ipv6mr_interface = imr_interface;
-
-        if (zsock_setsockopt(socket->fd, IPPROTO_IPV6, IPV6_DROP_MEMBERSHIP,
-                             &mreq, sizeof(mreq))
-            != 0) {
-            return BHT_ERROR;
-        }
-#else
-        errno = EAFNOSUPPORT;
-        return BHT_ERROR;
+        ret = zsock_setsockopt(socket->fd, IPPROTO_IPV6,
+                               IPV6_DROP_MEMBERSHIP, &mreq6, sizeof(mreq6));
+    } else
 #endif
-    }
-    else {
-        struct ip_mreqn mreq;
+    {
+        struct ip_mreqn mreq = {0};
         mreq.imr_multiaddr.s_addr = imr_multiaddr->ipv4;
-        mreq.imr_address.s_addr = imr_interface;
+        mreq.imr_address.s_addr   = imr_interface;
 
-        if (zsock_setsockopt(socket->fd, IPPROTO_IP, IP_DROP_MEMBERSHIP, &mreq,
-                             sizeof(mreq))
-            != 0) {
+        ret = zsock_setsockopt(socket->fd, IPPROTO_IP,
+                               IP_DROP_MEMBERSHIP, &mreq, sizeof(mreq));
+    }
+
+    if (ret != 0) {
+        switch (errno) {
+        case ENOENT:        /* not a member: OK */
+        case EINVAL:        /* some stacks use this for “not joined” */
+        case ENOPROTOOPT:
+        case ENOSYS:
+            return BHT_OK;
+        default:
             return BHT_ERROR;
         }
     }
