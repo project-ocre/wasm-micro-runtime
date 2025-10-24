@@ -38,6 +38,11 @@ uint32
 get_lib_shared_heap_export_apis(NativeSymbol **p_shared_heap_apis);
 #endif
 
+#if WASM_ENABLE_SOCKETCAN != 0
+uint32
+get_lib_socketcan_export_apis(NativeSymbol **p_shared_heap_apis);
+#endif
+
 uint32
 get_libc_wasi_export_apis(NativeSymbol **p_libc_wasi_apis);
 
@@ -519,6 +524,14 @@ wasm_native_init()
 
 #if WASM_ENABLE_SHARED_HEAP != 0
     n_native_symbols = get_lib_shared_heap_export_apis(&native_symbols);
+    if (n_native_symbols > 0
+        && !wasm_native_register_natives("env", native_symbols,
+                                         n_native_symbols))
+        goto fail;
+#endif
+
+#if WASM_ENABLE_SOCKETCAN != 0
+    n_native_symbols = get_lib_socketcan_export_apis(&native_symbols);
     if (n_native_symbols > 0
         && !wasm_native_register_natives("env", native_symbols,
                                          n_native_symbols))
