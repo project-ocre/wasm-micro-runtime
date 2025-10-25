@@ -14,6 +14,17 @@
 #ifdef BH_PLATFORM_LINUX
 #include <linux/can.h>
 #include <linux/can/raw.h>
+
+// Filter: "Allow All"
+// Match logic: <received_can_id> & mask == can_id & mask
+static struct can_filter sock_filter = {
+        .can_id = 0x0,
+        .can_mask = 0x0
+};
+
+#define LOG_DBG LOG_DEBUG
+#define LOG_INF LOG_INFO
+#define LOG_ERR LOG_ERROR
 #endif
 
 #ifdef BH_PLATFORM_ZEPHYR
@@ -24,6 +35,14 @@
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(net_socket_can_sample, LOG_LEVEL_DBG);
+
+// Filter: "Allow All"
+// Match logic: <received_can_id> & mask == can_id & mask
+static struct socketcan_filter sock_filter = {
+    .can_id = 0x0,
+    .can_mask = 0x0,
+    .flags = 0U
+};
 #endif
 
 #include "bh_common.h"
@@ -35,14 +54,6 @@ LOG_MODULE_REGISTER(net_socket_can_sample, LOG_LEVEL_DBG);
 #include "../common/wasm_runtime_common.h"
 
 #define CAN_BITRATE 125000
-
-// Filter: "Allow All"
-// Match logic: <received_can_id> & mask == can_id & mask
-static struct socketcan_filter sock_filter = {
-    .can_id = 0x0,
-    .can_mask = 0x0,
-    .flags = 0U
-};
 
 /* socketcan_open */
 uint32
@@ -76,7 +87,7 @@ socketcan_start(wasm_exec_env_t exec_env, const char *ifname)
 
     ret = can_start(dev);
     if (ret != 0) {
-        LOG_ERROR("Cannot start CAN controller (%d)", ret);
+        LOG_ERR("Cannot start CAN controller (%d)", ret);
         return -1;
     }
 
@@ -140,7 +151,7 @@ socketcan_open(wasm_exec_env_t exec_env, const char *ifname)
     /* Create socket */
     int sock = socket(AF_CAN, SOCK_RAW, CAN_RAW);
     if (sock < 0) {
-        LOG_ERROR("socketcan_socket: failed to create socket");
+        LOG_ERR("socketcan_socket: failed to create socket");
         return -1;
     }
 
@@ -151,7 +162,7 @@ socketcan_open(wasm_exec_env_t exec_env, const char *ifname)
     struct ifreq ifr;
     strcpy(ifr.ifr_name, ifname);
     if (ioctl(sock, SIOCGIFINDEX, &ifr) < 0) {
-        LOG_ERROR("socketcan_socket: failed to get interface index");
+        LOG_ERR("socketcan_socket: failed to get interface index");
         close(sock);
         return -1;
     }
@@ -221,7 +232,7 @@ uint32
 socketcan_start_wrapper(wasm_exec_env_t exec_env, const char *ifname)
 {
     if (!ifname || *ifname == '\0') {
-        LOG_ERROR("Invalid interface name");
+        LOG_ERR("Invalid interface name");
         return -1;
     }
 
@@ -232,7 +243,7 @@ uint32
 socketcan_open_wrapper(wasm_exec_env_t exec_env, const char *ifname)
 {
     if (!ifname || *ifname == '\0') {
-        LOG_ERROR("Invalid interface name");
+        LOG_ERR("Invalid interface name");
         return -1;
     }
 
