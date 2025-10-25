@@ -24,12 +24,6 @@
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(net_socket_can_sample, LOG_LEVEL_DBG);
-
-static const struct can_filter zfilter = { .flags = 0U,
-                                           .id = 0x1,
-                                           .mask = CAN_STD_ID_MASK };
-
-static struct socketcan_filter sock_filter;
 #endif
 
 #include "bh_common.h"
@@ -40,7 +34,15 @@ static struct socketcan_filter sock_filter;
 #include "../interpreter/wasm.h"
 #include "../common/wasm_runtime_common.h"
 
-#define CAN_BITRATE 500000
+#define CAN_BITRATE 125000
+
+// Filter: "Allow All"
+// Match logic: <received_can_id> & mask == can_id & mask
+static struct socketcan_filter sock_filter = {
+    .can_id = 0x0,
+    .can_mask = 0x0,
+    .flags = 0U
+};
 
 /* socketcan_open */
 uint32
@@ -56,26 +58,21 @@ socketcan_start(wasm_exec_env_t exec_env, const char *ifname)
     const struct device *dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_canbus));
     int ret;
 
-    // struct can_timing timing;
-    // ret = can_calc_timing(dev, &timing, CAN_BITRATE, 875);
-    // if (ret > 0) {
-    //     LOG_INF("Sample-Point error: %d", ret);
-    // }
+    struct can_timing timing;
+    ret = can_calc_timing(dev, &timing, CAN_BITRATE, 875);
+    if (ret > 0) {
+        LOG_INF("Sample-Point error: %d", ret);
+    }
 
-    // if (ret < 0) {
-    //     LOG_ERR("Failed to calc a valid timing");
-    //     return -1;
-    // }
+    if (ret < 0) {
+        LOG_ERR("Failed to calc a valid timing");
+        return -1;
+    }
 
-    // ret = can_stop(dev);
-    // if (ret != 0) {
-    //     LOG_ERR("Failed to stop CAN controller");
-    // }
-
-    // ret = can_set_timing(dev, &timing);
-    // if (ret != 0) {
-    //     LOG_ERR("Failed to set timing");
-    // }
+    ret = can_set_timing(dev, &timing);
+    if (ret != 0) {
+        LOG_ERR("Failed to set timing");
+    }
 
     ret = can_start(dev);
     if (ret != 0) {
@@ -195,17 +192,21 @@ socketcan_open(wasm_exec_env_t exec_env, const char *ifname)
 
     /* Bind socket to CAN interface */
     if (bind(sock, (struct sockaddr *)&can_addr, sizeof(can_addr)) < 0) {
-        LOG_ERROR("socketcan_socket: failed to bind socket");
+        LOG_ERR("socketcan_socket: failed to bind socket");
         close(sock);
         return -1;
     }
 
-// // Set up CAN filter
-#if defined(BH_PLATFORM_ZEPHYR)
-    socketcan_from_can_filter(&zfilter, &sock_filter);
-    (void)setsockopt(sock, SOL_CAN_RAW, CAN_RAW_FILTER, &sock_filter,
-                     sizeof(sock_filter));
-#endif
+// Set up CAN filter
+// #if defined(BH_PLATFORM_ZEPHYR)
+    // socketcan_from_can_filter(&zfilter, &sock_filter);
+    if(setsockopt(sock, SOL_CAN_RAW, CAN_RAW_FILTER, &sock_filter,
+                     sizeof(sock_filter))) {
+        LOG_ERR("socketcan_socket: failed to set CAN filter");
+        close(sock);
+        return -1;
+    }
+// #endif
 
     int sockfd = get_sockfds(exec_env, sock);
     LOG_DBG("socketcan_socket: assigned sockfd=%d", sockfd);
