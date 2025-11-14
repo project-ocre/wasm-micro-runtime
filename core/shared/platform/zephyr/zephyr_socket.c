@@ -1009,13 +1009,13 @@ os_socket_set_ip_ttl(bh_socket_t socket, uint8_t ttl_s)
 int
 os_socket_get_ip_ttl(bh_socket_t socket, uint8_t *ttl_s)
 {
-    socklen_t opt_len = sizeof(*ttl_s);
-
-    if (zsock_setsockopt(socket->fd, IPPROTO_IP, IP_MULTICAST_TTL, ttl_s,
-                         opt_len)
-        != 0) {
+    /* Use proper int for zsock_getsockopt */
+    int opt;
+    socklen_t opt_len = sizeof(opt);
+    if (zsock_getsockopt(socket->fd, IPPROTO_IP, IP_TTL, &opt, &opt_len) != 0) {
         return BHT_ERROR;
     }
+    *ttl_s = (uint8_t)opt;
 
     return BHT_OK;
 }
@@ -1035,13 +1035,15 @@ os_socket_set_ip_multicast_ttl(bh_socket_t socket, uint8_t ttl_s)
 int
 os_socket_get_ip_multicast_ttl(bh_socket_t socket, uint8_t *ttl_s)
 {
-    socklen_t opt_len = sizeof(*ttl_s);
-
-    if (zsock_setsockopt(socket->fd, IPPROTO_IP, IP_MULTICAST_TTL, ttl_s,
-                         opt_len)
+    /* Use proper int for zsock_getsockopt */
+    int opt;
+    socklen_t opt_len = sizeof(opt);
+    if (zsock_getsockopt(socket->fd, IPPROTO_IP, IP_MULTICAST_TTL, &opt,
+                         &opt_len)
         != 0) {
         return BHT_ERROR;
     }
+    *ttl_s = (uint8_t)opt;
 
     return BHT_OK;
 }
