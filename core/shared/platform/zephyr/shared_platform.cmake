@@ -15,13 +15,15 @@ if(${CONFIG_MINIMAL_LIBC})
     set (source_all ${source_all} ${PLATFORM_COMMON_MATH_SOURCE})
 endif()
 
+list(APPEND source_all ${PLATFORM_SHARED_DIR}/../common/posix/posix_convert_stat.c)
+
 if (NOT WAMR_BUILD_LIBC_WASI EQUAL 1)
     list(REMOVE_ITEM source_all ${PLATFORM_SHARED_DIR}/zephyr_socket.c)
     list(REMOVE_ITEM source_all ${PLATFORM_SHARED_DIR}/zephyr_file.c)
     list(REMOVE_ITEM source_all ${PLATFORM_SHARED_DIR}/zephyr_clock.c)
 else()
-  include (${CMAKE_CURRENT_LIST_DIR}/../common/libc-util/platform_common_libc_util.cmake)
-  set(source_all ${source_all} ${PLATFORM_COMMON_LIBC_UTIL_SOURCE})
+    include (${CMAKE_CURRENT_LIST_DIR}/../common/libc-util/platform_common_libc_util.cmake)
+    set(source_all ${source_all} ${PLATFORM_COMMON_LIBC_UTIL_SOURCE})
 endif ()
 
 set (PLATFORM_SHARED_SOURCE ${source_all})

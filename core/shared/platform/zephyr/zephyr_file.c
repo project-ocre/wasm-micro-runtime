@@ -6,9 +6,13 @@
 #include "platform_api_vmcore.h"
 #include "platform_api_extension.h"
 #include "libc_errno.h"
+#include "bh_common.h"
+#include "unistd.h"
+#include "../common/posix/posix_convert_stat.h"
 
 #include <string.h>
 #include <stdlib.h>
+#include <fcntl.h>
 
 #include <zephyr/fs/fs.h>
 #include <zephyr/fs/fs_interface.h>
@@ -74,8 +78,7 @@ os_is_virtual_fd(int fd)
         k_mutex_lock(&desc_array_mutex, K_FOREVER);           \
         ptr = &desc_array[(int)fd - 3];                       \
         if (!ptr->used) {                                     \
-            k_mutex_unlock(&desc_array_mutex);                \
-            return __WASI_EBADF;                              \
+            ptr = NULL;                                       \
         }                                                     \
         k_mutex_unlock(&desc_array_mutex);                    \
     } while (0)
@@ -168,30 +171,42 @@ os_fstat(os_file_handle handle, struct __wasi_filestat_t *buf)
             return __WASI_ESUCCESS;
         }
 
+        // can be directory fd
         GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
+        if (ptr) {
+            // Get file information using Zephyr's fs_stat function
+            struct fs_dirent entry;
+            rc = fs_stat(ptr->path, &entry);
+            if (rc < 0) {
+                return convert_errno(-rc);
+            }
 
-        // Get file information using Zephyr's fs_stat function
-        struct fs_dirent entry;
-        rc = fs_stat(ptr->path, &entry);
-        if (rc < 0) {
-            return convert_errno(-rc);
+            // Fill in the __wasi_filestat_t structure
+            buf->st_dev = 0; // Zephyr's fs_stat doesn't provide a device ID
+            buf->st_ino = 0; // Zephyr's fs_stat doesn't provide an inode number
+            buf->st_filetype = entry.type == FS_DIR_ENTRY_DIR
+                                ? __WASI_FILETYPE_DIRECTORY
+                                : __WASI_FILETYPE_REGULAR_FILE;
+            buf->st_nlink = 1; // Zephyr's fs_stat doesn't provide a link count
+            buf->st_size = entry.size;
+            buf->st_atim = 0; // Zephyr's fs_stat doesn't provide timestamps
+            buf->st_mtim = 0;
+            buf->st_ctim = 0;
+
+            return __WASI_ESUCCESS;
         }
+        else {
+            struct stat stat_buf;
+            rc = fstat(handle->fd, &stat_buf);
 
-        // Fill in the __wasi_filestat_t structure
-        buf->st_dev = 0; // Zephyr's fs_stat doesn't provide a device ID
-        buf->st_ino = 0; // Zephyr's fs_stat doesn't provide an inode number
-        buf->st_filetype = entry.type == FS_DIR_ENTRY_DIR
-                               ? __WASI_FILETYPE_DIRECTORY
-                               : __WASI_FILETYPE_REGULAR_FILE;
-        buf->st_nlink = 1; // Zephyr's fs_stat doesn't provide a link count
-        buf->st_size = entry.size;
-        buf->st_atim = 0; // Zephyr's fs_stat doesn't provide timestamps
-        buf->st_mtim = 0;
-        buf->st_ctim = 0;
+            if (rc < 0) {
+                return convert_errno(errno);
+            }
 
-        return __WASI_ESUCCESS;
+            posix_convert_stat(handle, &stat_buf, buf);
 
-        // return os_fstatat(handle, ptr->path, buf, 0);
+            return __WASI_ESUCCESS;
+        }
     }
     else {
         // socklen_t socktypelen = sizeof(socktype);
@@ -278,18 +293,46 @@ os_file_get_fdflags(os_file_handle handle, __wasi_fdflags_t *flags)
         return __WASI_ESUCCESS;
     }
 
+    // can be directory fd
     GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
-
-    if ((ptr->file.flags & FS_O_APPEND) != 0) {
-        *flags |= __WASI_FDFLAG_APPEND;
+    if (ptr) {
+        if ((ptr->file.flags & FS_O_APPEND) != 0) {
+            *flags |= __WASI_FDFLAG_APPEND;
+        }
+        /* Others flags:
+        *     - __WASI_FDFLAG_DSYNC
+        *     - __WASI_FDFLAG_RSYNC
+        *     - __WASI_FDFLAG_SYNC
+        *     - __WASI_FDFLAG_NONBLOCK
+        * Have no equivalent in Zephyr.
+        */
     }
-    /* Others flags:
-     *     - __WASI_FDFLAG_DSYNC
-     *     - __WASI_FDFLAG_RSYNC
-     *     - __WASI_FDFLAG_SYNC
-     *     - __WASI_FDFLAG_NONBLOCK
-     * Have no equivalent in Zephyr.
-     */
+    else {
+        int ret = fcntl(handle->fd, F_GETFL);
+
+        if (ret < 0)
+            return convert_errno(errno);
+
+        *flags = 0;
+
+        if ((ret & O_APPEND) != 0)
+            *flags |= __WASI_FDFLAG_APPEND;
+#ifdef CONFIG_HAS_O_DSYNC
+        if ((ret & O_DSYNC) != 0)
+            *flags |= __WASI_FDFLAG_DSYNC;
+#endif
+        if ((ret & O_NONBLOCK) != 0)
+            *flags |= __WASI_FDFLAG_NONBLOCK;
+#ifdef CONFIG_HAS_O_RSYNC
+        if ((ret & O_RSYNC) != 0)
+            *flags |= __WASI_FDFLAG_RSYNC;
+#endif
+#ifdef CONFIG_HAS_O_SYNC
+        if ((ret & O_SYNC) != 0)
+            *flags |= __WASI_FDFLAG_SYNC;
+#endif
+    }
+
     return __WASI_ESUCCESS;
 }
 
@@ -302,19 +345,59 @@ os_file_set_fdflags(os_file_handle handle, __wasi_fdflags_t flags)
 
     struct zephyr_fs_desc *ptr = NULL;
 
+    // can be directory fd
     GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
-
-    if ((flags & __WASI_FDFLAG_APPEND) != 0) {
-        ptr->file.flags |= FS_O_APPEND;
+    if (ptr) {
+        if ((flags & __WASI_FDFLAG_APPEND) != 0) {
+            ptr->file.flags |= FS_O_APPEND;
+        }
+        /* Same as above */
     }
-    /* Same as above */
+    else {
+        int fcntl_flags = 0;
+
+        if ((flags & __WASI_FDFLAG_APPEND) != 0)
+            fcntl_flags |= O_APPEND;
+        if ((flags & __WASI_FDFLAG_DSYNC) != 0)
+    #ifdef CONFIG_HAS_O_DSYNC
+            fcntl_flags |= O_DSYNC;
+    #else
+            return __WASI_ENOTSUP;
+    #endif
+        if ((flags & __WASI_FDFLAG_NONBLOCK) != 0)
+            fcntl_flags |= O_NONBLOCK;
+        if ((flags & __WASI_FDFLAG_RSYNC) != 0)
+    #ifdef CONFIG_HAS_O_RSYNC
+            fcntl_flags |= O_RSYNC;
+    #else
+            return __WASI_ENOTSUP;
+    #endif
+        if ((flags & __WASI_FDFLAG_SYNC) != 0)
+    #ifdef CONFIG_HAS_O_SYNC
+            fcntl_flags |= O_SYNC;
+    #else
+            return __WASI_ENOTSUP;
+    #endif
+
+        int ret = fcntl(handle->fd, F_SETFL, fcntl_flags);
+        
+        if (ret < 0)
+            return convert_errno(errno);
+    }
+
     return __WASI_ESUCCESS;
 }
 
 __wasi_errno_t
 os_fdatasync(os_file_handle handle)
 {
-    return os_fsync(handle);
+    struct zephyr_fs_desc *ptr = NULL;
+    // can be directory fd
+    GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
+    if (ptr)
+        return os_fsync(handle);
+    else
+        return fsync(handle->fd);
 }
 
 __wasi_errno_t
@@ -327,13 +410,20 @@ os_fsync(os_file_handle handle)
     struct zephyr_fs_desc *ptr = NULL;
     int rc = 0;
 
+    // can be directory fd
     GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
 
-    if (ptr->is_dir) {
-        return __WASI_EISDIR;
+    if (ptr) {
+        if (ptr->is_dir) {
+            return __WASI_EISDIR;
+        }
+
+        rc = fs_sync(&ptr->file);
+    }
+    else {
+        rc = fsync(handle->fd);
     }
 
-    rc = fs_sync(&ptr->file);
     if (rc < 0) {
         return convert_errno(-rc);
     }
@@ -511,6 +601,12 @@ os_file_get_access_mode(os_file_handle handle,
     }
 
     GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
+    if (!ptr) {
+        // return __WASI_EBADF;
+        // TODO: use fstat!!!!
+        *access_mode = WASI_LIBC_ACCESS_MODE_READ_WRITE;
+        return __WASI_ESUCCESS;
+    }
 
     if (ptr->is_dir) {
         // DSK: is this actually the correct mode for a dir?
@@ -548,9 +644,14 @@ os_close(os_file_handle handle, bool is_stdio)
     }
     // Handle is assumed to be a file descriptor
     else {
+        // can be directory fd
         GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
-
-        rc = ptr->is_dir ? fs_closedir(&ptr->dir) : fs_close(&ptr->file);
+        if (ptr) {
+            rc = ptr->is_dir ? fs_closedir(&ptr->dir) : fs_close(&ptr->file);
+        }
+        else {
+            rc = close(handle->fd);
+        }
         zephyr_fs_free_obj(ptr); // free in any case.
     }
 
@@ -570,21 +671,18 @@ os_preadv(os_file_handle handle, const struct __wasi_iovec_t *iov, int iovcnt,
         return __WASI_ENOSYS;
     }
 
-    struct zephyr_fs_desc *ptr = NULL;
     int rc;
     ssize_t total_read = 0;
 
-    GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
-
     // Seek to the offset
-    rc = fs_seek(&ptr->file, offset, FS_SEEK_SET);
+    rc = lseek(handle->fd, offset, SEEK_SET);
     if (rc < 0) {
         return convert_errno(-rc);
     }
 
     // Read data into each buffer
     for (int i = 0; i < iovcnt; i++) {
-        ssize_t bytes_read = fs_read(&ptr->file, iov[i].buf, iov[i].buf_len);
+        ssize_t bytes_read = read(handle->fd, iov[i].buf, iov[i].buf_len);
         if (bytes_read < 0) {
             return convert_errno(-bytes_read);
         }
@@ -606,13 +704,10 @@ __wasi_errno_t
 os_pwritev(os_file_handle handle, const struct __wasi_ciovec_t *iov, int iovcnt,
            __wasi_filesize_t offset, size_t *nwritten)
 {
-    struct zephyr_fs_desc *ptr = NULL;
     ssize_t total_written = 0;
 
-    GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
-
     // Seek to the offset
-    int rc = fs_seek(&ptr->file, offset, FS_SEEK_SET);
+    int rc = lseek(handle->fd, offset, SEEK_SET);
     if (rc < 0) {
         return convert_errno(-rc);
     }
@@ -620,7 +715,7 @@ os_pwritev(os_file_handle handle, const struct __wasi_ciovec_t *iov, int iovcnt,
     // Write data from each buffer
     for (int i = 0; i < iovcnt; i++) {
         ssize_t bytes_written =
-            fs_write(&ptr->file, iov[i].buf, iov[i].buf_len);
+            write(handle->fd,iov[i].buf,iov[i].buf_len);
         if (bytes_written < 0) {
             return convert_errno(-bytes_written);
         }
@@ -642,14 +737,11 @@ __wasi_errno_t
 os_readv(os_file_handle handle, const struct __wasi_iovec_t *iov, int iovcnt,
          size_t *nread)
 {
-    struct zephyr_fs_desc *ptr = NULL;
     ssize_t total_read = 0;
-
-    GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
 
     // Read data into each buffer
     for (int i = 0; i < iovcnt; i++) {
-        ssize_t bytes_read = fs_read(&ptr->file, iov[i].buf, iov[i].buf_len);
+        ssize_t bytes_read = read(handle->fd, iov[i].buf, iov[i].buf_len);
         if (bytes_read < 0) {
             // If an error occurred, return it
             return convert_errno(-bytes_read);
@@ -689,13 +781,10 @@ os_writev(os_file_handle handle, const struct __wasi_ciovec_t *iov, int iovcnt,
         return __WASI_ESUCCESS;
     }
 
-    struct zephyr_fs_desc *ptr = NULL;
-    GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
-
     // Write data from each buffer
     for (int i = 0; i < iovcnt; i++) {
         ssize_t bytes_written =
-            fs_write(&ptr->file, iov[i].buf, iov[i].buf_len);
+            write(handle->fd, iov[i].buf, iov[i].buf_len);
         if (bytes_written < 0) {
             return convert_errno(-bytes_written);
         }
@@ -728,10 +817,7 @@ os_ftruncate(os_file_handle handle, __wasi_filesize_t size)
         return __WASI_EINVAL;
     }
 
-    struct zephyr_fs_desc *ptr = NULL;
-    GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
-
-    int rc = fs_truncate(&ptr->file, (off_t)size);
+    int rc = ftruncate(handle->fd, (off_t)size);
     if (rc < 0) {
         return convert_errno(-rc);
     }
@@ -907,27 +993,23 @@ os_lseek(os_file_handle handle, __wasi_filedelta_t offset,
         return __WASI_ESPIPE; // Seeking not supported on character streams
     }
 
-    struct zephyr_fs_desc *ptr = NULL;
     int zwhence;
 
-    GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
-
-    // They have the same value but this is more explicit
     switch (whence) {
         case __WASI_WHENCE_SET:
-            zwhence = FS_SEEK_SET;
+            zwhence = SEEK_SET;
             break;
         case __WASI_WHENCE_CUR:
-            zwhence = FS_SEEK_CUR;
+            zwhence = SEEK_CUR;
             break;
         case __WASI_WHENCE_END:
-            zwhence = FS_SEEK_END;
+            zwhence = SEEK_END;
             break;
         default:
             return __WASI_EINVAL;
     }
 
-    off_t rc = fs_seek(&ptr->file, (off_t)offset, zwhence);
+    off_t rc = lseek(handle->fd, (off_t)offset, zwhence);
     if (rc < 0) {
         return convert_errno(-rc);
     }
@@ -999,6 +1081,10 @@ os_fdopendir(os_file_handle handle, os_dir_stream *dir_stream)
     struct zephyr_fs_desc *ptr = NULL;
 
     GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
+    if (!ptr) {
+        return __WASI_EBADF;
+    }
+
     if (!ptr->is_dir) {
         return __WASI_ENOTDIR;
     }
@@ -1020,6 +1106,9 @@ os_rewinddir(os_dir_stream dir_stream)
 {
     struct zephyr_fs_desc *ptr = NULL;
     GET_FILE_SYSTEM_DESCRIPTOR(dir_stream, ptr);
+    if (!ptr) {
+        return __WASI_EBADF;
+    }
 
     if (!ptr->is_dir)
         return __WASI_ENOTDIR;
@@ -1043,6 +1132,9 @@ os_seekdir(os_dir_stream dir_stream, __wasi_dircookie_t position)
 {
     struct zephyr_fs_desc *ptr = NULL;
     GET_FILE_SYSTEM_DESCRIPTOR(dir_stream, ptr);
+    if (!ptr) {
+        return __WASI_EBADF;
+    }
 
     if (!ptr->is_dir)
         return __WASI_ENOTDIR;
@@ -1076,6 +1168,10 @@ os_readdir(os_dir_stream dir_stream, __wasi_dirent_t *entry,
     struct fs_dirent fs_entry;
     struct zephyr_fs_desc *ptr = NULL;
     GET_FILE_SYSTEM_DESCRIPTOR(dir_stream, ptr);
+    if (!ptr) {
+        return __WASI_EBADF;
+    }
+
     if (!ptr->is_dir) {
         return __WASI_ENOTDIR;
     }
