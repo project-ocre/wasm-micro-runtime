@@ -17,7 +17,6 @@
 
 #include <zephyr/net/socket.h>
 #include <zephyr/posix/fcntl.h>   // F_GETFL, F_SETFL, O_NONBLOCK
-// #include <zephyr/net/socket_select.h>
 
 /* Notes:
  * This is the implementation of a POSIX-like file system interface for Zephyr.
@@ -297,7 +296,13 @@ os_file_get_fdflags(os_file_handle handle, __wasi_fdflags_t *flags)
     if ((ptr->file.flags & FS_O_APPEND) != 0) {
         *flags |= __WASI_FDFLAG_APPEND;
     }
-
+    /* Others flags:
+     *     - __WASI_FDFLAG_DSYNC
+     *     - __WASI_FDFLAG_RSYNC
+     *     - __WASI_FDFLAG_SYNC
+     *     - __WASI_FDFLAG_NONBLOCK
+     * Have no equivalent in Zephyr.
+     */
     return __WASI_ESUCCESS;
 }
 
@@ -319,16 +324,18 @@ os_file_set_fdflags(os_file_handle handle, __wasi_fdflags_t flags)
         return __WASI_ESUCCESS;
     }
 
-    /* Virtual stdio */
-    if (os_is_virtual_fd(handle->fd))
+    if (os_is_virtual_fd(handle->fd)) {
         return __WASI_ESUCCESS;
+    }
 
-    /* Regular files: keep existing behavior */
     struct zephyr_fs_desc *ptr = NULL;
-    GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
-    if ((flags & __WASI_FDFLAG_APPEND) != 0)
-        ptr->file.flags |= FS_O_APPEND;
 
+    GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
+
+    if ((flags & __WASI_FDFLAG_APPEND) != 0) {
+        ptr->file.flags |= FS_O_APPEND;
+    }
+    /* Same as above */
     return __WASI_ESUCCESS;
 }
 
