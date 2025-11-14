@@ -236,7 +236,6 @@ os_socket_bind(bh_socket_t socket, const char *host, int *port)
     // F_SETF_SETFD and FD_CLOEXEC are not defined in zephyr.
     // SO_LINGER: Socket lingers on close (ignored, for compatibility)
     
-    //ret = zsock_bind(socket->fd, (struct sockaddr *)&addr, sizeof(sa4));
     ret = zsock_bind(socket->fd, (struct sockaddr *)&addr, socklen);
     if (ret < 0) {
         return BHT_ERROR;
