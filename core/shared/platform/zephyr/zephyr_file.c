@@ -16,7 +16,7 @@
 #include <zephyr/fs/littlefs.h>
 
 #include <zephyr/net/socket.h>
-#include <zephyr/posix/fcntl.h>   // F_GETFL, F_SETFL, O_NONBLOCK
+#include <zephyr/posix/fcntl.h> // F_GETFL, F_SETFL, O_NONBLOCK
 
 /* Notes:
  * This is the implementation of a POSIX-like file system interface for Zephyr.

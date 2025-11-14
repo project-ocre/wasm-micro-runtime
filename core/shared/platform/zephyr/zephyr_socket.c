@@ -33,9 +33,9 @@ textual_addr_to_sockaddr(const char *textual, int port, struct sockaddr *out,
         v4->sin_family = AF_INET;
         v4->sin_port = htons(port);
         /**
-         * In `zephyr_socket.c` the method `textual_addr_to_sockaddr` takes the 
-         * multicast address of "224.0.0.22" and properly sets the sockaddr. 
-         * However, this fails when binding to the adapter for some reason. 
+         * In `zephyr_socket.c` the method `textual_addr_to_sockaddr` takes the
+         * multicast address of "224.0.0.22" and properly sets the sockaddr.
+         * However, this fails when binding to the adapter for some reason.
          * Setting this to “0.0.0.0” works. This appears to be a bug in Zephyr.
          */
         v4->sin_addr.s_addr = htonl(INADDR_ANY);
@@ -235,7 +235,7 @@ os_socket_bind(bh_socket_t socket, const char *host, int *port)
 
     // F_SETF_SETFD and FD_CLOEXEC are not defined in zephyr.
     // SO_LINGER: Socket lingers on close (ignored, for compatibility)
-    
+
     ret = zsock_bind(socket->fd, (struct sockaddr *)&addr, socklen);
     if (ret < 0) {
         return BHT_ERROR;
@@ -270,9 +270,9 @@ os_socket_settimeout(bh_socket_t socket, uint64 timeout_us)
 
     if (zsock_setsockopt(socket->fd, SOL_SOCKET, SO_RCVTIMEO, &timeout,
                          sizeof(timeout))
-        != 0){
-            return BHT_ERROR;
-        }
+        != 0) {
+        return BHT_ERROR;
+    }
 
     return BHT_OK;
 }
@@ -929,20 +929,20 @@ os_socket_set_ip_add_membership(bh_socket_t socket,
         mreq.imr_multiaddr.s_addr = imr_multiaddr->ipv4;
         mreq.imr_address.s_addr = imr_interface;
 
-        int ret = zsock_setsockopt(socket->fd, IPPROTO_IP,
-                               IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq));
+        int ret = zsock_setsockopt(socket->fd, IPPROTO_IP, IP_ADD_MEMBERSHIP,
+                                   &mreq, sizeof(mreq));
         if (ret != 0) {
             switch (errno) {
-            case EALREADY:      /* already joined: OK */
-            case EADDRINUSE:    /* duplicate membership: OK */
-            case ENOPROTOOPT:   /* option not supported: treat as soft-OK */
-            case ENOSYS:        /* not implemented: soft-OK */
-                return BHT_OK;
-            default:
-                return BHT_ERROR;
-                }
+                case EALREADY:    /* already joined: OK */
+                case EADDRINUSE:  /* duplicate membership: OK */
+                case ENOPROTOOPT: /* option not supported: treat as soft-OK */
+                case ENOSYS:      /* not implemented: soft-OK */
+                    return BHT_OK;
+                default:
+                    return BHT_ERROR;
             }
         }
+    }
     return BHT_OK;
 }
 
@@ -978,20 +978,20 @@ os_socket_set_ip_drop_membership(bh_socket_t socket,
         mreq.imr_multiaddr.s_addr = imr_multiaddr->ipv4;
         mreq.imr_address.s_addr = imr_interface;
 
-        int ret = zsock_setsockopt(socket->fd, IPPROTO_IP,
-                               IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq));
+        int ret = zsock_setsockopt(socket->fd, IPPROTO_IP, IP_ADD_MEMBERSHIP,
+                                   &mreq, sizeof(mreq));
         if (ret != 0) {
             switch (errno) {
-            case EALREADY:      /* already joined: OK */
-            case EADDRINUSE:    /* duplicate membership: OK */
-            case ENOPROTOOPT:   /* option not supported: treat as soft-OK */
-            case ENOSYS:        /* not implemented: soft-OK */
-                return BHT_OK;
-            default:
-                return BHT_ERROR;
-                }
+                case EALREADY:    /* already joined: OK */
+                case EADDRINUSE:  /* duplicate membership: OK */
+                case ENOPROTOOPT: /* option not supported: treat as soft-OK */
+                case ENOSYS:      /* not implemented: soft-OK */
+                    return BHT_OK;
+                default:
+                    return BHT_ERROR;
             }
         }
+    }
     return BHT_OK;
 }
 
