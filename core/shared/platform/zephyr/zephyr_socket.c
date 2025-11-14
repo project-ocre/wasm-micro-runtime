@@ -32,6 +32,12 @@ textual_addr_to_sockaddr(const char *textual, int port, struct sockaddr *out,
     if (zsock_inet_pton(AF_INET, textual, &v4->sin_addr.s_addr) == 1) {
         v4->sin_family = AF_INET;
         v4->sin_port = htons(port);
+        /**
+         * In `zephyr_socket.c` the method `textual_addr_to_sockaddr` takes the 
+         * multicast address of "224.0.0.22" and properly sets the sockaddr. 
+         * However, this fails when binding to the adapter for some reason. 
+         * Setting this to “0.0.0.0” works. This appears to be a bug in Zephyr.
+         */
         v4->sin_addr.s_addr = htonl(INADDR_ANY);
         *out_len = sizeof(struct sockaddr_in);
         return true;
