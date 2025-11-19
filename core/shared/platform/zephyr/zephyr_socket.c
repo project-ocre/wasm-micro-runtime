@@ -932,6 +932,11 @@ os_socket_set_ip_add_membership(bh_socket_t socket,
         int ret = zsock_setsockopt(socket->fd, IPPROTO_IP, IP_ADD_MEMBERSHIP,
                                    &mreq, sizeof(mreq));
         if (ret != 0) {
+            /* Treat certain errors as non-fatal for multicast membership.
+             * These conditions indicate the operation is either already
+             * complete or not supported by the network stack, but shouldn't
+             * prevent the application from continuing. This improves
+             * compatibility across different Zephyr network configurations. */
             switch (errno) {
                 case EALREADY:    /* already joined: OK */
                 case EADDRINUSE:  /* duplicate membership: OK */
@@ -981,6 +986,11 @@ os_socket_set_ip_drop_membership(bh_socket_t socket,
         int ret = zsock_setsockopt(socket->fd, IPPROTO_IP, IP_ADD_MEMBERSHIP,
                                    &mreq, sizeof(mreq));
         if (ret != 0) {
+            /* Treat certain errors as non-fatal for multicast membership.
+             * These conditions indicate the operation is either already
+             * complete or not supported by the network stack, but shouldn't
+             * prevent the application from continuing. This improves
+             * compatibility across different Zephyr network configurations. */
             switch (errno) {
                 case EALREADY:    /* already joined: OK */
                 case EADDRINUSE:  /* duplicate membership: OK */
