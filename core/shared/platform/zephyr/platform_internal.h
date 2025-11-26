@@ -53,6 +53,8 @@
 #include <zephyr/net/socket.h>
 #endif /* end of KERNEL_VERSION_NUMBER < 0x030200 */
 
+// #include <zephyr/fs/fs_interface.h>
+
 #ifdef CONFIG_USERSPACE
 #include <zephyr/sys/mutex.h>
 #include <zephyr/sys/sem.h>
@@ -262,6 +264,7 @@ typedef struct zephyr_fs_desc {
 typedef struct zephyr_handle {
     int fd;
     bool is_sock;
+    bool is_posix_fd;
 } zephyr_handle;
 
 typedef struct zephyr_handle *os_file_handle;

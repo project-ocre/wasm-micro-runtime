@@ -7,8 +7,15 @@
 #include "platform_api_extension.h"
 #include "libc_errno.h"
 
+#include "bh_common.h"
+#include "unistd.h"
+
+#include "../common/posix/posix_convert_stat.h"
+
+
 #include <string.h>
 #include <stdlib.h>
+#include <fcntl.h>
 
 #include <zephyr/fs/fs.h>
 #include <zephyr/fs/fs_interface.h>
@@ -171,6 +178,19 @@ os_fstat(os_file_handle handle, struct __wasi_filestat_t *buf)
             return __WASI_ESUCCESS;
         }
 
+        if (handle->is_posix_fd) {
+            struct stat stat_buf;
+            rc = fstat(handle->fd, &stat_buf);
+
+            if (rc < 0) {
+                return convert_errno(errno);
+            }
+
+            posix_convert_stat(handle, &stat_buf, buf);
+
+            return __WASI_ESUCCESS;
+        }
+
         GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
 
         // Get file information using Zephyr's fs_stat function
@@ -291,6 +311,34 @@ os_file_get_fdflags(os_file_handle handle, __wasi_fdflags_t *flags)
         return __WASI_ESUCCESS;
     }
 
+    if (handle->is_posix_fd) {
+        int ret = fcntl(handle->fd, F_GETFL);
+
+        if (ret < 0)
+            return convert_errno(errno);
+
+        *flags = 0;
+
+        if ((ret & O_APPEND) != 0)
+            *flags |= __WASI_FDFLAG_APPEND;
+#ifdef CONFIG_HAS_O_DSYNC
+        if ((ret & O_DSYNC) != 0)
+            *flags |= __WASI_FDFLAG_DSYNC;
+#endif
+        if ((ret & O_NONBLOCK) != 0)
+            *flags |= __WASI_FDFLAG_NONBLOCK;
+#ifdef CONFIG_HAS_O_RSYNC
+        if ((ret & O_RSYNC) != 0)
+            *flags |= __WASI_FDFLAG_RSYNC;
+#endif
+#ifdef CONFIG_HAS_O_SYNC
+        if ((ret & O_SYNC) != 0)
+            *flags |= __WASI_FDFLAG_SYNC;
+#endif
+
+        return __WASI_ESUCCESS;
+    }
+
     GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
 
     if ((ptr->file.flags & FS_O_APPEND) != 0) {
@@ -328,6 +376,40 @@ os_file_set_fdflags(os_file_handle handle, __wasi_fdflags_t flags)
         return __WASI_ESUCCESS;
     }
 
+    if (handle->is_posix_fd) {
+        int fcntl_flags = 0;
+
+        if ((flags & __WASI_FDFLAG_APPEND) != 0)
+            fcntl_flags |= O_APPEND;
+        if ((flags & __WASI_FDFLAG_DSYNC) != 0)
+    #ifdef CONFIG_HAS_O_DSYNC
+            fcntl_flags |= O_DSYNC;
+    #else
+            return __WASI_ENOTSUP;
+    #endif
+        if ((flags & __WASI_FDFLAG_NONBLOCK) != 0)
+            fcntl_flags |= O_NONBLOCK;
+        if ((flags & __WASI_FDFLAG_RSYNC) != 0)
+    #ifdef CONFIG_HAS_O_RSYNC
+            fcntl_flags |= O_RSYNC;
+    #else
+            return __WASI_ENOTSUP;
+    #endif
+        if ((flags & __WASI_FDFLAG_SYNC) != 0)
+    #ifdef CONFIG_HAS_O_SYNC
+            fcntl_flags |= O_SYNC;
+    #else
+            return __WASI_ENOTSUP;
+    #endif
+
+        int ret = fcntl(handle->fd, F_SETFL, fcntl_flags);
+
+        if (ret < 0)
+            return convert_errno(errno);
+
+        return __WASI_ESUCCESS;
+    }
+
     struct zephyr_fs_desc *ptr = NULL;
 
     GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
@@ -342,7 +424,12 @@ os_file_set_fdflags(os_file_handle handle, __wasi_fdflags_t flags)
 __wasi_errno_t
 os_fdatasync(os_file_handle handle)
 {
-    return os_fsync(handle);
+    if (handle->is_posix_fd) {
+        return fsync(handle->fd);
+    }
+    else {
+        return os_fsync(handle);
+    }
 }
 
 __wasi_errno_t
@@ -355,13 +442,18 @@ os_fsync(os_file_handle handle)
     struct zephyr_fs_desc *ptr = NULL;
     int rc = 0;
 
-    GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
+    if (handle->is_posix_fd) {
+        rc = fsync(handle->fd);
+    }
+    else {
+        GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
 
-    if (ptr->is_dir) {
-        return __WASI_EISDIR;
+        if (ptr->is_dir) {
+            return __WASI_EISDIR;
+        }
+        rc = fs_sync(&ptr->file);
     }
 
-    rc = fs_sync(&ptr->file);
     if (rc < 0) {
         return convert_errno(-rc);
     }
@@ -397,6 +489,7 @@ os_open_preopendir(const char *path, os_file_handle *out)
 
     (*out)->fd = index;
     (*out)->is_sock = false;
+    (*out)->is_posix_fd = false;
 
     strncpy(prestat_dir, path, MAX_FILE_NAME + 1);
     prestat_dir[MAX_FILE_NAME] = '\0';
@@ -511,6 +604,7 @@ os_openat(os_file_handle handle, const char *path, __wasi_oflags_t oflags,
 
     (*out)->fd = index;
     (*out)->is_sock = false;
+    (*out)->is_posix_fd = false;
 
     return __WASI_ESUCCESS;
 }
@@ -532,6 +626,13 @@ os_file_get_access_mode(os_file_handle handle,
     struct zephyr_fs_desc *ptr = NULL;
 
     if (handle->is_sock) {
+        // for socket we can use the following code
+        // TODO: Need to determine better logic
+        *access_mode = WASI_LIBC_ACCESS_MODE_READ_WRITE;
+        return __WASI_ESUCCESS;
+    }
+
+    if (handle->is_posix_fd) {
         // for socket we can use the following code
         // TODO: Need to determine better logic
         *access_mode = WASI_LIBC_ACCESS_MODE_READ_WRITE;
@@ -576,9 +677,13 @@ os_close(os_file_handle handle, bool is_stdio)
     }
     // Handle is assumed to be a file descriptor
     else {
-        GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
-
-        rc = ptr->is_dir ? fs_closedir(&ptr->dir) : fs_close(&ptr->file);
+        if (handle->is_posix_fd) {
+            rc = close(handle->fd);
+        }
+        else {
+            GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
+            rc = ptr->is_dir ? fs_closedir(&ptr->dir) : fs_close(&ptr->file);
+        }
         zephyr_fs_free_obj(ptr); // free in any case.
     }
 
@@ -602,17 +707,28 @@ os_preadv(os_file_handle handle, const struct __wasi_iovec_t *iov, int iovcnt,
     int rc;
     ssize_t total_read = 0;
 
-    GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
-
     // Seek to the offset
-    rc = fs_seek(&ptr->file, offset, FS_SEEK_SET);
+    if (handle->is_posix_fd) {
+        rc = lseek(handle->fd, offset, SEEK_SET);
+    }
+    else {
+        GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
+        rc = fs_seek(&ptr->file, offset, FS_SEEK_SET);
+    }
+
     if (rc < 0) {
         return convert_errno(-rc);
     }
 
     // Read data into each buffer
     for (int i = 0; i < iovcnt; i++) {
-        ssize_t bytes_read = fs_read(&ptr->file, iov[i].buf, iov[i].buf_len);
+        ssize_t bytes_read;
+        if (handle->is_posix_fd) {
+            bytes_read = read(handle->fd, iov[i].buf, iov[i].buf_len);
+        }
+        else {
+            bytes_read = fs_read(&ptr->file, iov[i].buf, iov[i].buf_len);
+        }
         if (bytes_read < 0) {
             return convert_errno(-bytes_read);
         }
@@ -637,18 +753,31 @@ os_pwritev(os_file_handle handle, const struct __wasi_ciovec_t *iov, int iovcnt,
     struct zephyr_fs_desc *ptr = NULL;
     ssize_t total_written = 0;
 
-    GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
-
     // Seek to the offset
-    int rc = fs_seek(&ptr->file, offset, FS_SEEK_SET);
+    int rc;
+    if (handle->is_posix_fd) {
+        rc = lseek(handle->fd, offset, SEEK_SET);
+    }
+    else {
+        GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
+        rc = fs_seek(&ptr->file, offset, FS_SEEK_SET);
+    }
+
     if (rc < 0) {
         return convert_errno(-rc);
     }
 
     // Write data from each buffer
     for (int i = 0; i < iovcnt; i++) {
-        ssize_t bytes_written =
-            fs_write(&ptr->file, iov[i].buf, iov[i].buf_len);
+        ssize_t bytes_written;
+        if (handle->is_posix_fd) {
+            bytes_written = write(handle->fd,iov[i].buf,iov[i].buf_len);
+        }
+        else {
+            bytes_written =
+                fs_write(&ptr->file, iov[i].buf, iov[i].buf_len);
+        }
+
         if (bytes_written < 0) {
             return convert_errno(-bytes_written);
         }
@@ -673,11 +802,19 @@ os_readv(os_file_handle handle, const struct __wasi_iovec_t *iov, int iovcnt,
     struct zephyr_fs_desc *ptr = NULL;
     ssize_t total_read = 0;
 
-    GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
+    if (!handle->is_posix_fd) {
+        GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
+    }
 
     // Read data into each buffer
     for (int i = 0; i < iovcnt; i++) {
-        ssize_t bytes_read = fs_read(&ptr->file, iov[i].buf, iov[i].buf_len);
+        ssize_t bytes_read;
+        if(handle->is_posix_fd) {
+            bytes_read = read(handle->fd, iov[i].buf, iov[i].buf_len);
+        }
+        else {
+            bytes_read = fs_read(&ptr->file, iov[i].buf, iov[i].buf_len);
+        }
         if (bytes_read < 0) {
             // If an error occurred, return it
             return convert_errno(-bytes_read);
@@ -718,12 +855,20 @@ os_writev(os_file_handle handle, const struct __wasi_ciovec_t *iov, int iovcnt,
     }
 
     struct zephyr_fs_desc *ptr = NULL;
-    GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
+    if (!handle->is_posix_fd) {
+        GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
+    }
 
     // Write data from each buffer
     for (int i = 0; i < iovcnt; i++) {
-        ssize_t bytes_written =
-            fs_write(&ptr->file, iov[i].buf, iov[i].buf_len);
+        ssize_t bytes_written;
+        if (handle->is_posix_fd) {
+            bytes_written = write(handle->fd, iov[i].buf, iov[i].buf_len);
+        }
+        else {
+            bytes_written =
+                fs_write(&ptr->file, iov[i].buf, iov[i].buf_len);
+        }
         if (bytes_written < 0) {
             return convert_errno(-bytes_written);
         }
@@ -756,10 +901,15 @@ os_ftruncate(os_file_handle handle, __wasi_filesize_t size)
         return __WASI_EINVAL;
     }
 
-    struct zephyr_fs_desc *ptr = NULL;
-    GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
-
-    int rc = fs_truncate(&ptr->file, (off_t)size);
+    int rc;
+    if (handle->is_posix_fd) {
+        rc = ftruncate(handle->fd, (off_t)size);
+    }
+    else {
+        struct zephyr_fs_desc *ptr = NULL;
+        GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
+        rc = fs_truncate(&ptr->file, (off_t)size);
+    }
     if (rc < 0) {
         return convert_errno(-rc);
     }
@@ -833,6 +983,7 @@ os_mkdirat(os_file_handle handle, const char *path)
 
     handle->fd = index;
     handle->is_sock = false;
+    handle->is_posix_fd = false;
 
     return __WASI_ESUCCESS;
 }
@@ -938,24 +1089,45 @@ os_lseek(os_file_handle handle, __wasi_filedelta_t offset,
     struct zephyr_fs_desc *ptr = NULL;
     int zwhence;
 
-    GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
+    off_t rc;
+    if(handle->is_posix_fd) {
+        switch (whence) {
+            case __WASI_WHENCE_SET:
+                zwhence = SEEK_SET;
+                break;
+            case __WASI_WHENCE_CUR:
+                zwhence = SEEK_CUR;
+                break;
+            case __WASI_WHENCE_END:
+                zwhence = SEEK_END;
+                break;
+            default:
+                return __WASI_EINVAL;
+        }
 
-    // They have the same value but this is more explicit
-    switch (whence) {
-        case __WASI_WHENCE_SET:
-            zwhence = FS_SEEK_SET;
-            break;
-        case __WASI_WHENCE_CUR:
-            zwhence = FS_SEEK_CUR;
-            break;
-        case __WASI_WHENCE_END:
-            zwhence = FS_SEEK_END;
-            break;
-        default:
-            return __WASI_EINVAL;
+        rc = lseek(handle->fd, (off_t)offset, zwhence);
+    }
+    else {
+        GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
+
+        // They have the same value but this is more explicit
+        switch (whence) {
+            case __WASI_WHENCE_SET:
+                zwhence = FS_SEEK_SET;
+                break;
+            case __WASI_WHENCE_CUR:
+                zwhence = FS_SEEK_CUR;
+                break;
+            case __WASI_WHENCE_END:
+                zwhence = FS_SEEK_END;
+                break;
+            default:
+                return __WASI_EINVAL;
+        }
+
+        rc = fs_seek(&ptr->file, (off_t)offset, zwhence);
     }
 
-    off_t rc = fs_seek(&ptr->file, (off_t)offset, zwhence);
     if (rc < 0) {
         return convert_errno(-rc);
     }
@@ -991,6 +1163,7 @@ os_convert_stdin_handle(os_raw_file_handle raw_stdin)
 
     handle->fd = STDIN_FILENO;
     handle->is_sock = false;
+    handle->is_posix_fd = false;
     return handle;
 }
 
@@ -1003,6 +1176,7 @@ os_convert_stdout_handle(os_raw_file_handle raw_stdout)
 
     handle->fd = STDOUT_FILENO;
     handle->is_sock = false;
+    handle->is_posix_fd = false;
     return handle;
 }
 
@@ -1015,6 +1189,7 @@ os_convert_stderr_handle(os_raw_file_handle raw_stderr)
 
     handle->fd = STDERR_FILENO;
     handle->is_sock = false;
+    handle->is_posix_fd = false;
     return handle;
 }
 
@@ -1204,7 +1379,9 @@ os_realpath(const char *path, char *resolved_path)
 bool
 os_compare_file_handle(os_file_handle handle1, os_file_handle handle2)
 {
-    return handle1->fd == handle2->fd && handle1->is_sock == handle2->is_sock;
+    return handle1->fd == handle2->fd &&
+        handle1->is_sock == handle2->is_sock &&
+        handle1->is_posix_fd == handle2->is_posix_fd;
 }
 
 bool
