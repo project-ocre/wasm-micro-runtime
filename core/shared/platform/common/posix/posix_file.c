@@ -6,6 +6,7 @@
 #include "platform_api_extension.h"
 #include "libc_errno.h"
 #include <unistd.h>
+#include "posix_util_convert.h"
 
 #if !defined(__APPLE__) && !defined(ESP_PLATFORM)
 #define CONFIG_HAS_PWRITEV 1
@@ -66,84 +67,6 @@
 #define STDERR_FILENO 2
 #endif
 
-// Converts a POSIX timespec to a WASI timestamp.
-static __wasi_timestamp_t
-convert_timespec(const struct timespec *ts)
-{
-    if (ts->tv_sec < 0)
-        return 0;
-    if ((__wasi_timestamp_t)ts->tv_sec >= UINT64_MAX / 1000000000)
-        return UINT64_MAX;
-    return (__wasi_timestamp_t)ts->tv_sec * 1000000000
-           + (__wasi_timestamp_t)ts->tv_nsec;
-}
-
-// Converts a POSIX stat structure to a WASI filestat structure
-static void
-convert_stat(os_file_handle handle, const struct stat *in,
-             __wasi_filestat_t *out)
-{
-    out->st_dev = in->st_dev;
-    out->st_ino = in->st_ino;
-    out->st_nlink = (__wasi_linkcount_t)in->st_nlink;
-    out->st_size = (__wasi_filesize_t)in->st_size;
-#ifdef __APPLE__
-    out->st_atim = convert_timespec(&in->st_atimespec);
-    out->st_mtim = convert_timespec(&in->st_mtimespec);
-    out->st_ctim = convert_timespec(&in->st_ctimespec);
-#else
-    out->st_atim = convert_timespec(&in->st_atim);
-    out->st_mtim = convert_timespec(&in->st_mtim);
-    out->st_ctim = convert_timespec(&in->st_ctim);
-#endif
-
-    // Convert the file type. In the case of sockets there is no way we
-    // can easily determine the exact socket type.
-    if (S_ISBLK(in->st_mode)) {
-        out->st_filetype = __WASI_FILETYPE_BLOCK_DEVICE;
-    }
-    else if (S_ISCHR(in->st_mode)) {
-        out->st_filetype = __WASI_FILETYPE_CHARACTER_DEVICE;
-    }
-    else if (S_ISDIR(in->st_mode)) {
-        out->st_filetype = __WASI_FILETYPE_DIRECTORY;
-    }
-    else if (S_ISFIFO(in->st_mode)) {
-        out->st_filetype = __WASI_FILETYPE_SOCKET_STREAM;
-    }
-    else if (S_ISLNK(in->st_mode)) {
-        out->st_filetype = __WASI_FILETYPE_SYMBOLIC_LINK;
-    }
-    else if (S_ISREG(in->st_mode)) {
-        out->st_filetype = __WASI_FILETYPE_REGULAR_FILE;
-    }
-    else if (S_ISSOCK(in->st_mode)) {
-        int socktype;
-        socklen_t socktypelen = sizeof(socktype);
-
-        if (getsockopt(handle, SOL_SOCKET, SO_TYPE, &socktype, &socktypelen)
-            < 0) {
-            out->st_filetype = __WASI_FILETYPE_UNKNOWN;
-            return;
-        }
-
-        switch (socktype) {
-            case SOCK_DGRAM:
-                out->st_filetype = __WASI_FILETYPE_SOCKET_DGRAM;
-                break;
-            case SOCK_STREAM:
-                out->st_filetype = __WASI_FILETYPE_SOCKET_STREAM;
-                break;
-            default:
-                out->st_filetype = __WASI_FILETYPE_UNKNOWN;
-                return;
-        }
-    }
-    else {
-        out->st_filetype = __WASI_FILETYPE_UNKNOWN;
-    }
-}
-
 static void
 convert_timestamp(__wasi_timestamp_t in, struct timespec *out)
 {
@@ -196,7 +119,7 @@ os_fstat(os_file_handle handle, struct __wasi_filestat_t *buf)
     if (ret < 0)
         return convert_errno(errno);
 
-    convert_stat(handle, &stat_buf, buf);
+    posix_convert_stat(handle, &stat_buf, buf);
 
     return __WASI_ESUCCESS;
 }
@@ -214,7 +137,7 @@ os_fstatat(os_file_handle handle, const char *path,
     if (ret < 0)
         return convert_errno(errno);
 
-    convert_stat(handle, &stat_buf, buf);
+    posix_convert_stat(handle, &stat_buf, buf);
 
     return __WASI_ESUCCESS;
 }
