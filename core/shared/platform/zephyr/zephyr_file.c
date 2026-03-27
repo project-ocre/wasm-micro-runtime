@@ -9,6 +9,7 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #include <zephyr/fs/fs.h>
 #include <zephyr/fs/fs_interface.h>
@@ -371,6 +372,8 @@ os_open_preopendir(const char *path, os_file_handle *out)
 
     (*out)->fd = index;
     (*out)->is_sock = false;
+    (*out)->is_stdio = false;
+    (*out)->raw_fd = -1;
 
     strncpy(prestat_dir, path, MAX_FILE_NAME + 1);
     prestat_dir[MAX_FILE_NAME] = '\0';
@@ -486,6 +489,8 @@ os_openat(os_file_handle handle, const char *path, __wasi_oflags_t oflags,
 
     (*out)->fd = index;
     (*out)->is_sock = false;
+    (*out)->is_stdio = false;
+    (*out)->raw_fd = -1;
 
     return __WASI_ESUCCESS;
 }
@@ -543,8 +548,12 @@ os_close(os_file_handle handle, bool is_stdio)
     int rc;
     struct zephyr_fs_desc *ptr = NULL;
 
-    if (is_stdio)
+    if (is_stdio) {
+        /* Don't close the underlying fd - the caller owns it.
+         * Just free the handle struct. */
+        BH_FREE(handle);
         return __WASI_ESUCCESS;
+    }
 
     if (handle->is_sock) {
         rc = zsock_close(handle->fd);
@@ -569,7 +578,8 @@ __wasi_errno_t
 os_preadv(os_file_handle handle, const struct __wasi_iovec_t *iov, int iovcnt,
           __wasi_filesize_t offset, size_t *nread)
 {
-    if (handle->fd == STDIN_FILENO) {
+    /* Positional read is not supported on stdio handles */
+    if (handle->is_stdio) {
         return __WASI_ENOSYS;
     }
 
@@ -610,6 +620,11 @@ __wasi_errno_t
 os_pwritev(os_file_handle handle, const struct __wasi_ciovec_t *iov, int iovcnt,
            __wasi_filesize_t offset, size_t *nwritten)
 {
+    /* Positional write is not supported on stdio handles */
+    if (handle->is_stdio) {
+        return __WASI_ENOSYS;
+    }
+
     struct zephyr_fs_desc *ptr = NULL;
     ssize_t total_written = 0;
 
@@ -647,8 +662,28 @@ __wasi_errno_t
 os_readv(os_file_handle handle, const struct __wasi_iovec_t *iov, int iovcnt,
          size_t *nread)
 {
-    struct zephyr_fs_desc *ptr = NULL;
     ssize_t total_read = 0;
+
+    /* Handle stdio (stdin/stdout/stderr) */
+    if (handle->is_stdio) {
+        if (handle->raw_fd >= 0) {
+            /* Use the real OS file descriptor */
+            for (int i = 0; i < iovcnt; i++) {
+                ssize_t bytes_read =
+                    read(handle->raw_fd, iov[i].buf, iov[i].buf_len);
+                if (bytes_read < 0)
+                    return convert_errno(errno);
+                total_read += bytes_read;
+                if ((size_t)bytes_read < iov[i].buf_len)
+                    break;
+            }
+        }
+        /* else: no real fd, return 0 bytes (EOF) */
+        *nread = total_read;
+        return __WASI_ESUCCESS;
+    }
+
+    struct zephyr_fs_desc *ptr = NULL;
 
     GET_FILE_SYSTEM_DESCRIPTOR(handle->fd, ptr);
 
@@ -674,21 +709,34 @@ os_readv(os_file_handle handle, const struct __wasi_iovec_t *iov, int iovcnt,
     return __WASI_ESUCCESS;
 }
 
-/* With wasi-libc we need to redirect write on stdout/err to printf */
-// TODO: handle write on stdin
 __wasi_errno_t
 os_writev(os_file_handle handle, const struct __wasi_ciovec_t *iov, int iovcnt,
           size_t *nwritten)
 {
     ssize_t total_written = 0;
 
-    if (os_is_virtual_fd(handle->fd)) {
-        FILE *fd = (handle->fd == STDERR_FILENO) ? stderr : stdout;
-        for (int i = 0; i < iovcnt; i++) {
-            ssize_t bytes_written = fwrite(iov[i].buf, 1, iov[i].buf_len, fd);
-            if (bytes_written < 0)
-                return convert_errno(-bytes_written);
-            total_written += bytes_written;
+    /* Handle stdio (stdin/stdout/stderr) */
+    if (handle->is_stdio) {
+        if (handle->raw_fd >= 0) {
+            /* Use the real OS file descriptor */
+            for (int i = 0; i < iovcnt; i++) {
+                ssize_t bytes_written =
+                    write(handle->raw_fd, iov[i].buf, iov[i].buf_len);
+                if (bytes_written < 0)
+                    return convert_errno(errno);
+                total_written += bytes_written;
+            }
+        }
+        else {
+            /* No real fd: fall back to fwrite on stdout/stderr */
+            FILE *f = (handle->fd == STDERR_FILENO) ? stderr : stdout;
+            for (int i = 0; i < iovcnt; i++) {
+                ssize_t bytes_written =
+                    fwrite(iov[i].buf, 1, iov[i].buf_len, f);
+                if (bytes_written < 0)
+                    return convert_errno(-bytes_written);
+                total_written += bytes_written;
+            }
         }
 
         *nwritten = total_written;
@@ -976,6 +1024,8 @@ os_convert_stdin_handle(os_raw_file_handle raw_stdin)
 
     handle->fd = STDIN_FILENO;
     handle->is_sock = false;
+    handle->is_stdio = true;
+    handle->raw_fd = raw_stdin >= 0 ? raw_stdin : -1;
     return handle;
 }
 
@@ -988,6 +1038,8 @@ os_convert_stdout_handle(os_raw_file_handle raw_stdout)
 
     handle->fd = STDOUT_FILENO;
     handle->is_sock = false;
+    handle->is_stdio = true;
+    handle->raw_fd = raw_stdout >= 0 ? raw_stdout : -1;
     return handle;
 }
 
@@ -1000,6 +1052,8 @@ os_convert_stderr_handle(os_raw_file_handle raw_stderr)
 
     handle->fd = STDERR_FILENO;
     handle->is_sock = false;
+    handle->is_stdio = true;
+    handle->raw_fd = raw_stderr >= 0 ? raw_stderr : -1;
     return handle;
 }
 
@@ -1195,17 +1249,17 @@ os_compare_file_handle(os_file_handle handle1, os_file_handle handle2)
 bool
 os_is_stdin_handle(os_file_handle handle)
 {
-    return (handle == (os_file_handle)stdin);
+    return handle != NULL && handle->is_stdio && handle->fd == STDIN_FILENO;
 }
 
 bool
 os_is_stdout_handle(os_file_handle handle)
 {
-    return (handle == (os_file_handle)stdout);
+    return handle != NULL && handle->is_stdio && handle->fd == STDOUT_FILENO;
 }
 
 bool
 os_is_stderr_handle(os_file_handle handle)
 {
-    return (handle == (os_file_handle)stderr);
+    return handle != NULL && handle->is_stdio && handle->fd == STDERR_FILENO;
 }
