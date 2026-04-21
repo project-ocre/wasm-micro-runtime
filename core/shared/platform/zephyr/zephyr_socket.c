@@ -203,6 +203,8 @@ os_socket_create(bh_socket_t *sock, bool is_ipv4, bool is_tcp)
     }
 
     (*sock)->is_sock = true;
+    (*sock)->is_stdio = false;
+    (*sock)->raw_fd = -1;
 
     if ((*sock)->fd == -1) {
         BH_FREE(*sock);
@@ -294,6 +296,8 @@ os_socket_accept(bh_socket_t server_sock, bh_socket_t *sock, void *addr,
     }
 
     (*sock)->is_sock = true;
+    (*sock)->is_stdio = false;
+    (*sock)->raw_fd = -1;
 
     return BHT_OK;
 }

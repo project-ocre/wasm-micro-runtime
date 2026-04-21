@@ -278,8 +278,11 @@ typedef struct zephyr_fs_desc {
 
 // definition of zephyr_handle
 typedef struct zephyr_handle {
-    int fd;
-    bool is_sock;
+    int fd; // virtual fd number (0=stdin, 1=stdout, 2=stderr) or desc_array
+            // index
+    bool is_sock;  // true if this is a socket
+    bool is_stdio; // true if this is a stdio handle (stdin/stdout/stderr)
+    int raw_fd;    // real OS file descriptor for stdio, or -1 if using defaults
 } zephyr_handle;
 
 typedef struct zephyr_handle *os_file_handle;
