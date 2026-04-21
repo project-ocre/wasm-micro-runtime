@@ -7,6 +7,7 @@
 #include "platform_api_extension.h"
 #include "libc_errno.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -720,10 +721,26 @@ os_writev(os_file_handle handle, const struct __wasi_ciovec_t *iov, int iovcnt,
         if (handle->raw_fd >= 0) {
             /* Use the real OS file descriptor */
             for (int i = 0; i < iovcnt; i++) {
-                ssize_t bytes_written =
-                    write(handle->raw_fd, iov[i].buf, iov[i].buf_len);
+                ssize_t bytes_written = 0;
+                if (handle->raw_fd == STDOUT_FILENO
+                    || handle->raw_fd == STDERR_FILENO) {
+                    /* Zephyr still does not support write to stdout with
+                     * picolibc. fprintf works. so we use it here. */
+                    fprintf(stdout, "%*s", (int)iov[i].buf_len,
+                            (char *)iov[i].buf);
+
+                    /* fprintf will also sometimes return more bytes than we
+                     * request, so we just bypass here */
+                    bytes_written = iov[i].buf_len;
+                }
+                else {
+                    bytes_written =
+                        write(handle->raw_fd, iov[i].buf, iov[i].buf_len);
+                }
+
                 if (bytes_written < 0)
                     return convert_errno(errno);
+
                 total_written += bytes_written;
             }
         }
@@ -731,6 +748,7 @@ os_writev(os_file_handle handle, const struct __wasi_ciovec_t *iov, int iovcnt,
             /* No real fd: fall back to fwrite on stdout/stderr */
             FILE *f = (handle->fd == STDERR_FILENO) ? stderr : stdout;
             for (int i = 0; i < iovcnt; i++) {
+                printf("2222\n");
                 ssize_t bytes_written =
                     fwrite(iov[i].buf, 1, iov[i].buf_len, f);
                 if (bytes_written < 0)
